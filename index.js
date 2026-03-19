@@ -27,16 +27,29 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const BOOKING_LINK = "https://outlook.office.com/bookwithme/user/985f08ed6d654b27b6c3fa6b3daacbc0@rentinottawa.com/meetingtype/h-nWjNZgGUWvAos0C6uVPw2?anonymous&ismsaljsauthenabled&ep=mlink";
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY || "missing"
 });
 
 /* ---------------- In-memory contexts ---------------- */
 
-const userContext = {};     
+const userContext = {};
 // senderId -> propertyCode
 
-const bookingContext = {};  
+const bookingContext = {};
 // senderId -> { step: "ask_name", propertyCode }
+
+const conversationHistory = {};
+// senderId -> Array<{ role: "user"|"assistant", content: string }>
+
+const MAX_HISTORY = 12; // messages kept per user
+
+function pushHistory(senderId, role, content) {
+  if (!conversationHistory[senderId]) conversationHistory[senderId] = [];
+  conversationHistory[senderId].push({ role, content });
+  if (conversationHistory[senderId].length > MAX_HISTORY) {
+    conversationHistory[senderId].splice(0, conversationHistory[senderId].length - MAX_HISTORY);
+  }
+}
 
 /* ---------------- Email setup ---------------- */
 
@@ -127,10 +140,10 @@ app.post("/webhook", async (req, res) => {
         propertyCode: booking.propertyCode
       });
 
-      await sendMessage(
-        senderId,
-        `Thanks ${name}. You can book a showing using the link below:\n\n${BOOKING_LINK}`
-      );
+      const reply = `Thanks ${name}. You can book a showing using the link below:\n\n${BOOKING_LINK}`;
+      await sendMessage(senderId, reply);
+      pushHistory(senderId, "user", userText);
+      pushHistory(senderId, "assistant", reply);
 
       delete bookingContext[senderId];
       return res.sendStatus(200);
@@ -141,7 +154,12 @@ app.post("/webhook", async (req, res) => {
     const codeMatch = userText.match(/prop[\s-]?\d+/i);
     if (codeMatch) {
       const num = codeMatch[0].match(/\d+/)[0];
-      userContext[senderId] = `PROP-${num.padStart(3, "0")}`;
+      const newCode = `PROP-${num.padStart(3, "0")}`;
+      // Reset history when user switches to a different property
+      if (userContext[senderId] !== newCode) {
+        conversationHistory[senderId] = [];
+      }
+      userContext[senderId] = newCode;
     }
 
     const activeCode = userContext[senderId];
@@ -152,14 +170,26 @@ app.post("/webhook", async (req, res) => {
     /* -------- No property yet -------- */
 
     if (!property) {
-      const greeting = await getGreetingReply(userText);
+      pushHistory(senderId, "user", userText);
+      const greeting = await getGreetingReply(userText, conversationHistory[senderId] || []);
+      pushHistory(senderId, "assistant", greeting);
       await sendMessage(senderId, greeting);
+      return res.sendStatus(200);
+    }
+
+    /* -------- Inactive property check -------- */
+
+    if (property.status === "inactive") {
+      const reply = `Sorry, ${property.code} is currently not available. Please reach out for other listings.`;
+      await sendMessage(senderId, reply);
       return res.sendStatus(200);
     }
 
     /* -------- Booking intent detection -------- */
 
-    if (/schedule|book|view|visit|see the place|viewing/i.test(userText)) {
+    const bookingIntent = /schedule|book|view|visit|see\s(the\s)?(place|unit|apartment|condo|house|property|it)|viewing|showing|tour|come by|check it out|i('m| am) interested|want to see|can i see|when can i|arrange a visit|set up a (time|meeting)|how do i (arrange|book|schedule)|i'd like to (see|visit)/i;
+
+    if (bookingIntent.test(userText)) {
       const name = await getFacebookUserName(senderId);
 
       if (!name) {
@@ -168,10 +198,10 @@ app.post("/webhook", async (req, res) => {
           propertyCode: property.code
         };
 
-        await sendMessage(
-          senderId,
-          "Sure. Before booking, may I have your name?"
-        );
+        const reply = "Sure! Before booking, may I have your name?";
+        pushHistory(senderId, "user", userText);
+        pushHistory(senderId, "assistant", reply);
+        await sendMessage(senderId, reply);
 
         return res.sendStatus(200);
       }
@@ -181,17 +211,19 @@ app.post("/webhook", async (req, res) => {
         propertyCode: property.code
       });
 
-      await sendMessage(
-        senderId,
-        `Great ${name}. You can book a showing using the link below:\n\n${BOOKING_LINK}`
-      );
+      const reply = `Great ${name}! You can book a showing using the link below:\n\n${BOOKING_LINK}`;
+      pushHistory(senderId, "user", userText);
+      pushHistory(senderId, "assistant", reply);
+      await sendMessage(senderId, reply);
 
       return res.sendStatus(200);
     }
 
     /* -------- AI property response -------- */
 
-    const aiReply = await getPropertyReply(userText, property);
+    pushHistory(senderId, "user", userText);
+    const aiReply = await getPropertyReply(senderId, property, conversationHistory[senderId]);
+    pushHistory(senderId, "assistant", aiReply);
     await sendMessage(senderId, aiReply);
 
     return res.sendStatus(200);
@@ -204,19 +236,17 @@ app.post("/webhook", async (req, res) => {
 
 /* ---------------- AI GREETING ---------------- */
 
-async function getGreetingReply(userText) {
+async function getGreetingReply(userText, history) {
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
       {
         role: "system",
         content:
-          "You are a friendly leasing assistant. Ask for a property code like PROP-001."
+          "You are a friendly leasing assistant for Rent In Ottawa. Greet the user warmly and ask them to share the property code (e.g. PROP-001) they are interested in so you can help them."
       },
-      {
-        role: "user",
-        content: userText || "User started chat"
-      }
+      // history already contains the current user message as last item
+      ...history
     ],
     temperature: 0.4
   });
@@ -226,33 +256,46 @@ async function getGreetingReply(userText) {
 
 /* ---------------- AI PROPERTY RESPONSE ---------------- */
 
-async function getPropertyReply(userMessage, property) {
+async function getPropertyReply(senderId, property, history) {
+  const descriptionSection = property.description
+    ? `\nFULL LISTING DESCRIPTION:\n${property.description}`
+    : "";
+
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
       {
         role: "system",
         content: `
-You are a leasing assistant.
+You are a knowledgeable and friendly leasing assistant for Rent In Ottawa.
+Your job is to answer questions about the property listed below.
 
-Rules:
-- Short answers only
-- Do not repeat full title unless asked
-- Use general Ottawa knowledge for location
-- Do not give exact distances
-- End with: "Would you like to schedule a viewing?"
+GUIDELINES:
+- Answer ONLY what the user asked. Keep responses short and conversational (1–3 sentences).
+- Understand paraphrased, casual, or indirect questions. For example:
+    • "is it pet-friendly?" / "can I bring my dog?" → pets/restrictions policy
+    • "what's included?" / "what do I get?" → what's covered (parking, locker, laundry, utilities)
+    • "how much?" / "what's the price?" / "what's the rent?" → rent amount
+    • "when can I move in?" / "when is it available?" → availability
+    • "is it near transit?" / "how's the commute?" / "is it walkable?" → location & transit
+    • "any restrictions?" / "house rules?" / "any rules?" → restrictions/policies
+    • "is parking available?" / "do you have parking?" / "what about parking?" → parking details
+    • "what floor?" / "how high up?" → floor/view info if available
+    • "is there laundry?" / "washer and dryer?" → laundry details
+    • "what amenities?" / "what does the building offer?" → building features
+- Do NOT repeat information already covered in the conversation above.
+- Do NOT end every message with a scheduling prompt. Only suggest scheduling a viewing if:
+    (a) the user seems genuinely interested and a scheduling offer has NOT been made recently in the conversation, OR
+    (b) the user has finished asking questions and the conversation feels like a natural conclusion.
+- If the user wants more detail on something, provide it from the listing description.
+- Never make up details not present in the property data or description below.
+
+PROPERTY DETAILS:
+${JSON.stringify(property, null, 2)}${descriptionSection}
         `.trim()
       },
-      {
-        role: "user",
-        content: `
-User message:
-"${userMessage}"
-
-Property data:
-${JSON.stringify(property, null, 2)}
-        `.trim()
-      }
+      // history already contains the current user message as the last item
+      ...history
     ],
     temperature: 0.3
   });
@@ -304,8 +347,9 @@ You are a data extraction assistant. Extract property listing details from the t
   bedrooms     (number, e.g. 2 or 3)
   bathrooms    (number, e.g. 1 or 2.5)
   parking      (string, e.g. "1 outdoor spot" or "garage")
-  restrictions (string, e.g. "no pets" or "no smoking")
+  restrictions (string, e.g. "no pets, no smoking, minimum lease 12 months")
   link         (string, URL or empty string if none)
+  description  (string, the full original listing description including amenities, building features, location highlights, and any other details — preserve as much detail as possible)
 Return nothing else. No commentary, no markdown — only the JSON object.
         `.trim()
       },
@@ -341,6 +385,20 @@ app.delete("/api/properties/:code", (req, res) => {
     return res.status(404).json({ error: `Property ${code} not found` });
   }
   res.json({ ok: true });
+});
+
+// PUT /api/properties/:code — update an existing property
+app.put("/api/properties/:code", (req, res) => {
+  const { code } = req.params;
+  const existing = db.getPropertyByCode(code);
+  if (!existing) {
+    return res.status(404).json({ error: `Property ${code} not found` });
+  }
+  const updated = { ...existing, ...req.body, code };
+  updated.bedrooms = Number(updated.bedrooms) || 0;
+  updated.bathrooms = Number(updated.bathrooms) || 0;
+  db.insertProperty(updated);
+  res.json({ ok: true, code });
 });
 
 /* ---------------- START SERVER ---------------- */

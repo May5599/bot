@@ -22,9 +22,20 @@ db.exec(`
     bathrooms    REAL NOT NULL DEFAULT 0,
     parking      TEXT NOT NULL DEFAULT '',
     restrictions TEXT NOT NULL DEFAULT '',
-    link         TEXT NOT NULL DEFAULT ''
+    link         TEXT NOT NULL DEFAULT '',
+    description  TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'active'
   )
 `);
+
+// Migrations: add columns that may not exist in older databases
+const migrations = [
+  `ALTER TABLE properties ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE properties ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`
+];
+for (const sql of migrations) {
+  try { db.exec(sql); } catch (e) { /* column already exists — safe to ignore */ }
+}
 
 // Seed with dummyData entries only if the table is empty
 function seedIfEmpty() {
@@ -62,11 +73,11 @@ function insertProperty(property) {
   return db.prepare(`
     INSERT OR REPLACE INTO properties
       (code, title, location, rent, availability,
-       bedrooms, bathrooms, parking, restrictions, link)
+       bedrooms, bathrooms, parking, restrictions, link, description, status)
     VALUES
       (@code, @title, @location, @rent, @availability,
-       @bedrooms, @bathrooms, @parking, @restrictions, @link)
-  `).run(property);
+       @bedrooms, @bathrooms, @parking, @restrictions, @link, @description, @status)
+  `).run({ description: "", status: "active", ...property });
 }
 
 function deleteProperty(code) {

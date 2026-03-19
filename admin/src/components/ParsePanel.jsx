@@ -2,14 +2,34 @@ import { useState } from 'react';
 
 const EMPTY = {
   code: '', title: '', location: '', rent: '', availability: '',
-  bedrooms: '', bathrooms: '', parking: '', restrictions: '', link: ''
+  bedrooms: '', bathrooms: '', parking: '', restrictions: '', link: '', description: ''
 };
 
-function ParsePanel({ onSave, onClose }) {
+const FIELD_LABELS = {
+  code: 'Code',
+  title: 'Title',
+  location: 'Location',
+  rent: 'Rent',
+  availability: 'Availability',
+  bedrooms: 'Bedrooms',
+  bathrooms: 'Bathrooms',
+  parking: 'Parking',
+  restrictions: 'Restrictions',
+  link: 'Listing URL',
+  description: 'Description'
+};
+
+const NUMERIC_FIELDS = ['bedrooms', 'bathrooms'];
+const TEXTAREA_FIELDS = ['description'];
+
+// ParsePanel handles both "Add via AI parse" and "Edit existing property"
+function ParsePanel({ onSave, onClose, initialData }) {
+  const isEditMode = !!initialData;
+
   const [rawText, setRawText] = useState('');
-  const [parsed, setParsed] = useState(null);
+  const [parsed, setParsed] = useState(isEditMode ? true : null); // skip step 1 in edit mode
   const [parsing, setParsing] = useState(false);
-  const [fields, setFields] = useState(EMPTY);
+  const [fields, setFields] = useState(isEditMode ? { ...EMPTY, ...initialData } : EMPTY);
   const [error, setError] = useState('');
 
   async function handleParse() {
@@ -37,13 +57,11 @@ function ParsePanel({ onSave, onClose }) {
     setFields((prev) => ({ ...prev, [key]: value }));
   }
 
-  const NUMERIC_FIELDS = ['bedrooms', 'bathrooms'];
-
   return (
     <div className="modal-overlay">
       <div className="modal parse-panel">
         <button className="modal-close" onClick={onClose}>✕</button>
-        <h2>Add Property via AI Parse</h2>
+        <h2>{isEditMode ? `Edit — ${initialData.code}` : 'Add Property via AI Parse'}</h2>
 
         {!parsed ? (
           <>
@@ -52,7 +70,7 @@ function ParsePanel({ onSave, onClose }) {
               rows={8}
               value={rawText}
               onChange={(e) => setRawText(e.target.value)}
-              placeholder="E.g. 3-bedroom house in South Keys, $2,550/month + utilities, available Dec 1st, garage, no pets..."
+              placeholder="E.g. 3-bedroom condo in the Entertainment District, $2,450/month + utilities, available March 1st, optional parking $200/month, no smoking, pets allowed..."
             />
             {error && <p className="error">{error}</p>}
             <div className="actions">
@@ -64,23 +82,37 @@ function ParsePanel({ onSave, onClose }) {
           </>
         ) : (
           <>
-            <p>Review and edit the extracted fields before saving:</p>
+            <p>{isEditMode ? 'Edit the fields and save your changes.' : 'Review and edit the extracted fields before saving.'}</p>
             <div className="field-grid">
               {Object.keys(EMPTY).map((key) => (
-                <label key={key} className="field-row">
-                  <span className="field-label">{key}</span>
-                  <input
-                    type={NUMERIC_FIELDS.includes(key) ? 'number' : 'text'}
-                    step={key === 'bathrooms' ? '0.5' : '1'}
-                    value={fields[key]}
-                    onChange={(e) => handleFieldChange(key, e.target.value)}
-                  />
+                <label key={key} className={`field-row ${TEXTAREA_FIELDS.includes(key) ? 'field-row-full' : ''}`}>
+                  <span className="field-label">{FIELD_LABELS[key]}</span>
+                  {TEXTAREA_FIELDS.includes(key) ? (
+                    <textarea
+                      rows={4}
+                      value={fields[key]}
+                      onChange={(e) => handleFieldChange(key, e.target.value)}
+                      placeholder="Full listing description — building amenities, location highlights, etc."
+                    />
+                  ) : (
+                    <input
+                      type={NUMERIC_FIELDS.includes(key) ? 'number' : 'text'}
+                      step={key === 'bathrooms' ? '0.5' : '1'}
+                      value={fields[key]}
+                      onChange={(e) => handleFieldChange(key, e.target.value)}
+                    />
+                  )}
                 </label>
               ))}
             </div>
             <div className="actions">
-              <button onClick={() => setParsed(null)} className="btn-secondary">Back</button>
-              <button onClick={() => onSave(fields)} className="btn-primary">Save Property</button>
+              {!isEditMode && (
+                <button onClick={() => setParsed(null)} className="btn-secondary">Back</button>
+              )}
+              <button onClick={onClose} className="btn-secondary">Cancel</button>
+              <button onClick={() => onSave(fields)} className="btn-primary">
+                {isEditMode ? 'Save Changes' : 'Save Property'}
+              </button>
             </div>
           </>
         )}

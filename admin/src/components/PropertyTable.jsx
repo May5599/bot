@@ -1,6 +1,11 @@
-function PropertyTable({ properties, onDeleteRequest }) {
+function PropertyTable({ properties, onDeleteRequest, onEditRequest, onToggleStatus }) {
   if (properties.length === 0) {
-    return <p className="empty">No properties found. Add one using the button above.</p>;
+    return (
+      <div className="empty-state">
+        <div className="empty-icon">🏘️</div>
+        <p>No properties yet. Add one using the button above.</p>
+      </div>
+    );
   }
 
   return (
@@ -14,25 +19,46 @@ function PropertyTable({ properties, onDeleteRequest }) {
             <th>Rent</th>
             <th>Bed / Bath</th>
             <th>Available</th>
-            <th></th>
+            <th>Status</th>
+            <th className="col-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
           {properties.map((p) => (
-            <tr key={p.code}>
+            <tr key={p.code} className={p.status === 'inactive' ? 'row-inactive' : ''}>
               <td><code>{p.code}</code></td>
-              <td>{p.title}</td>
-              <td>{p.location}</td>
-              <td>{p.rent}</td>
-              <td>{p.bedrooms}bd / {p.bathrooms}ba</td>
-              <td>{p.availability}</td>
+              <td className="td-title">{p.title}</td>
+              <td className="td-muted">{p.location}</td>
+              <td className="td-rent">{p.rent}</td>
+              <td className="td-muted">{p.bedrooms}bd / {p.bathrooms}ba</td>
+              <td className="td-muted">{p.availability}</td>
               <td>
                 <button
-                  className="btn-delete"
-                  onClick={() => onDeleteRequest(p.code)}
+                  className={`status-badge ${p.status === 'active' ? 'badge-active' : 'badge-inactive'}`}
+                  onClick={() => onToggleStatus(p)}
+                  title="Click to toggle status"
                 >
-                  Delete
+                  <span className="badge-dot" />
+                  {p.status === 'active' ? 'Active' : 'Inactive'}
                 </button>
+              </td>
+              <td>
+                <div className="action-btns">
+                  <button
+                    className="btn-icon btn-edit"
+                    onClick={() => onEditRequest(p)}
+                    title="Edit property"
+                  >
+                    ✏️
+                  </button>
+                  <button
+                    className="btn-icon btn-del"
+                    onClick={() => onDeleteRequest(p.code)}
+                    title="Delete property"
+                  >
+                    🗑️
+                  </button>
+                </div>
               </td>
             </tr>
           ))}
